@@ -120,6 +120,10 @@ class CHyprNstackLayout : public IHyprLayout {
 
     void                            moveToAdjacentStack(PHLWINDOW pWindow, int direction);
 
+    // Slave stack layout handlers
+    void                            layoutStackVertical(std::vector<SNstackNodeData*>& windows, PHLMONITOR monitor, int orientation, Vector2D stackPos, float stackWidth, float stackNodeSizeLeft);
+    void                            layoutStackDwindle(std::vector<SNstackNodeData*>& windows, PHLMONITOR monitor, int orientation, Vector2D stackPos, float stackWidth, float stackNodeSizeLeft);
+
     friend struct SNstackNodeData;
     friend struct SNstackWorkspaceData;
 };
