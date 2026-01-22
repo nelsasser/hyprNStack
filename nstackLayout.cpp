@@ -6,6 +6,8 @@
 #include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/render/decorations/CHyprGroupBarDecoration.hpp>
 #include <format>
+#include <functional>
+#include <map>
 #include <hyprland/src/render/decorations/IHyprWindowDecoration.hpp>
 
 SNstackNodeData* CHyprNstackLayout::getNodeFromWindow(PHLWINDOW pWindow) {
@@ -254,6 +256,8 @@ void CHyprNstackLayout::onWindowCreatedTiling(PHLWINDOW pWindow, eDirection dire
             // Focused window is a slave - route new window to same stack
             // Use stackNum - 1 to convert to 0-indexed targetStack
             PNODE->targetStack = OPENINGON->stackNum - 1;
+            // For dwindle mode: this window splits the focused window
+            PNODE->dwindleParent = OPENINGON->pWindow;
         }
         // else: focused on master or no focus - leave targetStack = -1 for auto-balance
 
@@ -618,7 +622,8 @@ void CHyprNstackLayout::calculateWorkspace(PHLWORKSPACE PWORKSPACE) {
 
         // Check if this stack uses dwindle layout
         if (PWORKSPACEDATA->stackLayoutModes[stackIdx] == eStackLayoutMode::DWINDLE) {
-            // Dwindle layout: recursive binary splits
+            // Dwindle layout: tree-based recursive splits
+            // Each window splits the space of its parent window
             CBox stackBox;
             if (orientation % 2 == 0) {
                 // Horizontal orientation (left/right/hcenter): stacks are columns
@@ -638,32 +643,87 @@ void CHyprNstackLayout::calculateWorkspace(PHLWORKSPACE PWORKSPACE) {
                 );
             }
 
-            // Apply dwindle layout to this stack's windows
-            bool splitHorizontal = (orientation % 2 == 0);  // Start with opposite of stack orientation
-            CBox remaining = stackBox;
+            // Build parent->children map for this stack
+            std::map<PHLWINDOW, std::vector<SNstackNodeData*>> childrenMap;
+            std::vector<SNstackNodeData*> roots;
 
-            for (size_t i = 0; i < windows.size(); i++) {
-                auto* nd = windows[i];
-                if (i == windows.size() - 1) {
-                    // Last window takes remaining space
-                    nd->position = Vector2D(remaining.x, remaining.y);
-                    nd->size = Vector2D(remaining.w, remaining.h);
-                } else {
-                    CBox thisBox = remaining;
-                    if (splitHorizontal) {
-                        thisBox.h = remaining.h / 2;
-                        remaining.y += thisBox.h;
-                        remaining.h -= thisBox.h;
-                    } else {
-                        thisBox.w = remaining.w / 2;
-                        remaining.x += thisBox.w;
-                        remaining.w -= thisBox.w;
+            for (auto* nd : windows) {
+                auto parent = nd->dwindleParent.lock();
+                // Check if parent is valid and in the same stack
+                bool parentInStack = false;
+                if (parent) {
+                    for (auto* other : windows) {
+                        if (other->pWindow.lock() == parent) {
+                            parentInStack = true;
+                            break;
+                        }
                     }
-                    nd->position = Vector2D(thisBox.x, thisBox.y);
-                    nd->size = Vector2D(thisBox.w, thisBox.h);
-                    splitHorizontal = !splitHorizontal;
                 }
-                applyNodeDataToWindow(nd);
+
+                if (parentInStack) {
+                    childrenMap[parent].push_back(nd);
+                } else {
+                    roots.push_back(nd);
+                }
+            }
+
+            // Recursive function to layout a window and its children
+            // Key insight: first child gets "split off" region, remaining children share parent's space
+            std::function<void(SNstackNodeData*, std::vector<SNstackNodeData*>, CBox, bool)> layoutDwindle =
+                [&](SNstackNodeData* node, std::vector<SNstackNodeData*> nodeChildren, CBox box, bool splitHorizontal) {
+                    if (nodeChildren.empty()) {
+                        // No children: this node takes the full box
+                        node->position = Vector2D(box.x, box.y);
+                        node->size = Vector2D(box.w, box.h);
+                        applyNodeDataToWindow(node);
+                    } else {
+                        // Has children: split the box
+                        // Parent keeps first half, first child gets second half
+                        // If parent has more children, they recursively split parent's half
+                        CBox parentBox = box;
+                        CBox firstChildBox = box;
+
+                        if (splitHorizontal) {
+                            parentBox.h = box.h / 2;
+                            firstChildBox.y = box.y + parentBox.h;
+                            firstChildBox.h = box.h - parentBox.h;
+                        } else {
+                            parentBox.w = box.w / 2;
+                            firstChildBox.x = box.x + parentBox.w;
+                            firstChildBox.w = box.w - parentBox.w;
+                        }
+
+                        // First child (and its subtree) goes in firstChildBox
+                        auto* firstChild = nodeChildren[0];
+                        auto& firstChildChildren = childrenMap[firstChild->pWindow.lock()];
+                        layoutDwindle(firstChild, firstChildChildren, firstChildBox, !splitHorizontal);
+
+                        // Parent + remaining children go in parentBox
+                        std::vector<SNstackNodeData*> remainingChildren(nodeChildren.begin() + 1, nodeChildren.end());
+                        layoutDwindle(node, remainingChildren, parentBox, !splitHorizontal);
+                    }
+                };
+
+            // Layout all root windows
+            bool splitHorizontal = (orientation % 2 == 0);
+            if (roots.size() == 1) {
+                auto& rootChildren = childrenMap[roots[0]->pWindow.lock()];
+                layoutDwindle(roots[0], rootChildren, stackBox, splitHorizontal);
+            } else {
+                // Multiple roots: split stackBox evenly among them
+                float rootSize = splitHorizontal ? stackBox.h / roots.size() : stackBox.w / roots.size();
+                for (size_t i = 0; i < roots.size(); i++) {
+                    CBox rootBox = stackBox;
+                    if (splitHorizontal) {
+                        rootBox.y = stackBox.y + i * rootSize;
+                        rootBox.h = rootSize;
+                    } else {
+                        rootBox.x = stackBox.x + i * rootSize;
+                        rootBox.w = rootSize;
+                    }
+                    auto& rootChildren = childrenMap[roots[i]->pWindow.lock()];
+                    layoutDwindle(roots[i], rootChildren, rootBox, splitHorizontal);
+                }
             }
         } else {
             // Vertical (default) layout: windows stacked linearly

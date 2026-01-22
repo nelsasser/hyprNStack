@@ -37,6 +37,7 @@ struct SNstackNodeData {
     float        percMaster     = 0.5f;
     int          stackNum       = 0;
     int          targetStack    = -1;  // -1 = auto-assign, 0+ = force this stack (0-indexed)
+    PHLWINDOWREF dwindleParent;        // Parent window for dwindle layout (window this was split from)
 
     PHLWINDOWREF pWindow;
 
