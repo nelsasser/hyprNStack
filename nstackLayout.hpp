@@ -21,6 +21,12 @@ enum class eStackLayoutMode : uint8_t {
     DWINDLE    // Recursive splits within the stack
 };
 
+// Split direction for dwindle layout nodes
+enum class eSplitDirection : uint8_t {
+    SPLIT_HORIZONTAL,  // Split top/bottom
+    SPLIT_VERTICAL     // Split left/right
+};
+
 //orientation determines which side of the screen the master area resides
 enum eColOrientation : uint8_t {
     NSTACK_ORIENTATION_LEFT = 0,
@@ -37,7 +43,8 @@ struct SNstackNodeData {
     float        percMaster     = 0.5f;
     int          stackNum       = 0;
     int          targetStack    = -1;  // -1 = auto-assign, 0+ = force this stack (0-indexed)
-    PHLWINDOWREF dwindleParent;        // Parent window for dwindle layout (window this was split from)
+    PHLWINDOWREF   dwindleParent;        // Parent window for dwindle layout (window this was split from)
+    eSplitDirection splitDirection = eSplitDirection::SPLIT_HORIZONTAL; // For dwindle: direction to split this node
 
     PHLWINDOWREF pWindow;
 
@@ -123,6 +130,7 @@ class CHyprNstackLayout : public IHyprLayout {
     // Slave stack layout handlers
     void                            layoutStackVertical(std::vector<SNstackNodeData*>& windows, PHLMONITOR monitor, int orientation, Vector2D stackPos, float stackWidth, float stackNodeSizeLeft);
     void                            layoutStackDwindle(std::vector<SNstackNodeData*>& windows, PHLMONITOR monitor, int orientation, Vector2D stackPos, float stackWidth, float stackNodeSizeLeft);
+    void                            recomputeSplitDirections(std::vector<SNstackNodeData*>& windows, int orientation);
 
     friend struct SNstackNodeData;
     friend struct SNstackWorkspaceData;

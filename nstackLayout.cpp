@@ -785,19 +785,21 @@ void CHyprNstackLayout::layoutStackDwindle(std::vector<SNstackNodeData*>& window
 
     // Recursive function to layout a window and its children
     // Key insight: first child gets "split off" region, remaining children share parent's space
-    std::function<void(SNstackNodeData*, std::vector<SNstackNodeData*>, CBox, bool)> layoutDwindleRecursive =
-        [&](SNstackNodeData* node, std::vector<SNstackNodeData*> nodeChildren, CBox box, bool splitHorizontal) {
+    // Uses each node's stored splitDirection instead of computing from depth
+    std::function<void(SNstackNodeData*, std::vector<SNstackNodeData*>, CBox)> layoutDwindleRecursive =
+        [&](SNstackNodeData* node, std::vector<SNstackNodeData*> nodeChildren, CBox box) {
             if (nodeChildren.empty()) {
                 // No children: this node takes the full box
                 node->position = Vector2D(box.x, box.y);
                 node->size = Vector2D(box.w, box.h);
                 applyNodeDataToWindow(node);
             } else {
-                // Has children: split the box
+                // Has children: split the box using this node's stored split direction
                 // Parent keeps first half, first child gets second half
                 // If parent has more children, they recursively split parent's half
                 CBox parentBox = box;
                 CBox firstChildBox = box;
+                bool splitHorizontal = (node->splitDirection == eSplitDirection::SPLIT_HORIZONTAL);
 
                 if (splitHorizontal) {
                     parentBox.h = box.h / 2;
@@ -812,25 +814,26 @@ void CHyprNstackLayout::layoutStackDwindle(std::vector<SNstackNodeData*>& window
                 // First child (and its subtree) goes in firstChildBox
                 auto* firstChild = nodeChildren[0];
                 auto& firstChildChildren = childrenMap[firstChild->pWindow.lock()];
-                layoutDwindleRecursive(firstChild, firstChildChildren, firstChildBox, !splitHorizontal);
+                layoutDwindleRecursive(firstChild, firstChildChildren, firstChildBox);
 
                 // Parent + remaining children go in parentBox
                 std::vector<SNstackNodeData*> remainingChildren(nodeChildren.begin() + 1, nodeChildren.end());
-                layoutDwindleRecursive(node, remainingChildren, parentBox, !splitHorizontal);
+                layoutDwindleRecursive(node, remainingChildren, parentBox);
             }
         };
 
     // Layout all root windows
-    bool splitHorizontal = (orientation % 2 == 0);
+    // For multiple roots, divide space evenly based on initial orientation
+    bool initialSplitHorizontal = (orientation % 2 == 0);
     if (roots.size() == 1) {
         auto& rootChildren = childrenMap[roots[0]->pWindow.lock()];
-        layoutDwindleRecursive(roots[0], rootChildren, stackBox, splitHorizontal);
+        layoutDwindleRecursive(roots[0], rootChildren, stackBox);
     } else {
         // Multiple roots: split stackBox evenly among them
-        float rootSize = splitHorizontal ? stackBox.h / roots.size() : stackBox.w / roots.size();
+        float rootSize = initialSplitHorizontal ? stackBox.h / roots.size() : stackBox.w / roots.size();
         for (size_t i = 0; i < roots.size(); i++) {
             CBox rootBox = stackBox;
-            if (splitHorizontal) {
+            if (initialSplitHorizontal) {
                 rootBox.y = stackBox.y + i * rootSize;
                 rootBox.h = rootSize;
             } else {
@@ -838,7 +841,7 @@ void CHyprNstackLayout::layoutStackDwindle(std::vector<SNstackNodeData*>& window
                 rootBox.w = rootSize;
             }
             auto& rootChildren = childrenMap[roots[i]->pWindow.lock()];
-            layoutDwindleRecursive(roots[i], rootChildren, rootBox, splitHorizontal);
+            layoutDwindleRecursive(roots[i], rootChildren, rootBox);
         }
     }
 }
@@ -871,6 +874,53 @@ void CHyprNstackLayout::layoutStackVertical(std::vector<SNstackNodeData*>& windo
         spaceLeft -= NODESIZE;
         nodeCoord += NODESIZE;
         applyNodeDataToWindow(nd);
+    }
+}
+
+void CHyprNstackLayout::recomputeSplitDirections(std::vector<SNstackNodeData*>& windows, int orientation) {
+    // Build parent->children map
+    std::map<PHLWINDOW, std::vector<SNstackNodeData*>> childrenMap;
+    std::vector<SNstackNodeData*> roots;
+
+    for (auto* nd : windows) {
+        auto parent = nd->dwindleParent.lock();
+        bool parentInStack = false;
+        if (parent) {
+            for (auto* other : windows) {
+                if (other->pWindow.lock() == parent) {
+                    parentInStack = true;
+                    break;
+                }
+            }
+        }
+
+        if (parentInStack) {
+            childrenMap[parent].push_back(nd);
+        } else {
+            roots.push_back(nd);
+        }
+    }
+
+    // Recursively set split directions based on tree depth
+    std::function<void(SNstackNodeData*, eSplitDirection)> setSplitDirections =
+        [&](SNstackNodeData* node, eSplitDirection direction) {
+            node->splitDirection = direction;
+            auto& children = childrenMap[node->pWindow.lock()];
+            eSplitDirection childDirection = (direction == eSplitDirection::SPLIT_HORIZONTAL)
+                ? eSplitDirection::SPLIT_VERTICAL
+                : eSplitDirection::SPLIT_HORIZONTAL;
+            for (auto* child : children) {
+                setSplitDirections(child, childDirection);
+            }
+        };
+
+    // Initial direction based on orientation
+    eSplitDirection initialDirection = (orientation % 2 == 0)
+        ? eSplitDirection::SPLIT_HORIZONTAL
+        : eSplitDirection::SPLIT_VERTICAL;
+
+    for (auto* root : roots) {
+        setSplitDirections(root, initialDirection);
     }
 }
 
@@ -1464,16 +1514,61 @@ std::any CHyprNstackLayout::layoutMessage(SLayoutMessageHeader header, std::stri
             return 0;
 
         std::string mode = vars.size() >= 2 ? vars[1] : "toggle";
+        bool switchingToDwindle = false;
 
         if (mode == "toggle") {
-            PWORKSPACEDATA->stackLayoutModes[stackIndex] =
-                (PWORKSPACEDATA->stackLayoutModes[stackIndex] == eStackLayoutMode::VERTICAL)
+            switchingToDwindle = (PWORKSPACEDATA->stackLayoutModes[stackIndex] == eStackLayoutMode::VERTICAL);
+            PWORKSPACEDATA->stackLayoutModes[stackIndex] = switchingToDwindle
                 ? eStackLayoutMode::DWINDLE : eStackLayoutMode::VERTICAL;
         } else if (mode == "dwindle") {
+            switchingToDwindle = true;
             PWORKSPACEDATA->stackLayoutModes[stackIndex] = eStackLayoutMode::DWINDLE;
         } else {
             PWORKSPACEDATA->stackLayoutModes[stackIndex] = eStackLayoutMode::VERTICAL;
         }
+
+        // When switching to dwindle, recompute split directions for all windows in this stack
+        if (switchingToDwindle) {
+            std::vector<SNstackNodeData*> stackWindows;
+            for (auto& nd : m_lMasterNodesData) {
+                if (nd.workspaceID == PWINDOW->workspaceID() && !nd.isMaster && nd.stackNum == PNODE->stackNum) {
+                    stackWindows.push_back(&nd);
+                }
+            }
+            recomputeSplitDirections(stackWindows, PWORKSPACEDATA->orientation);
+        }
+
+        recalculateMonitor(PWINDOW->monitorID());
+    } else if (command == "togglesplit") {
+        // Toggle split direction for the focused window in dwindle mode
+        const auto PWINDOW = header.pWindow;
+
+        if (!PWINDOW)
+            return 0;
+
+        if (!isWindowTiled(PWINDOW))
+            return 0;
+
+        const auto PNODE = getNodeFromWindow(PWINDOW);
+        if (!PNODE || PNODE->isMaster)
+            return 0;  // Only works on slave windows
+
+        const auto PWORKSPACEDATA = getMasterWorkspaceData(PWINDOW->workspaceID());
+        if (!PWORKSPACEDATA)
+            return 0;
+
+        int stackIndex = PNODE->stackNum - 1;
+        if (stackIndex < 0 || stackIndex >= (int)PWORKSPACEDATA->stackLayoutModes.size())
+            return 0;
+
+        // Only works in dwindle mode
+        if (PWORKSPACEDATA->stackLayoutModes[stackIndex] != eStackLayoutMode::DWINDLE)
+            return 0;
+
+        // Toggle the split direction
+        PNODE->splitDirection = (PNODE->splitDirection == eSplitDirection::SPLIT_HORIZONTAL)
+            ? eSplitDirection::SPLIT_VERTICAL
+            : eSplitDirection::SPLIT_HORIZONTAL;
 
         recalculateMonitor(PWINDOW->monitorID());
     }
