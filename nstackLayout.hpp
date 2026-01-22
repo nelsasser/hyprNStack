@@ -15,6 +15,12 @@
 
 enum eFullscreenMode : int8_t;
 
+// Layout mode for individual slave stacks
+enum class eStackLayoutMode : uint8_t {
+    VERTICAL,  // Current behavior: windows stacked vertically/horizontally based on orientation
+    DWINDLE    // Recursive splits within the stack
+};
+
 //orientation determines which side of the screen the master area resides
 enum eColOrientation : uint8_t {
     NSTACK_ORIENTATION_LEFT = 0,
@@ -30,6 +36,7 @@ struct SNstackNodeData {
     bool         masterAdjusted = false;
     float        percMaster     = 0.5f;
     int          stackNum       = 0;
+    int          targetStack    = -1;  // -1 = auto-assign, 0+ = force this stack (0-indexed)
 
     PHLWINDOWREF pWindow;
 
@@ -47,10 +54,11 @@ struct SNstackNodeData {
 };
 
 struct SNstackWorkspaceData {
-    int                workspaceID = -1;
-    std::vector<float> stackPercs;
-    std::vector<int>   stackNodeCount;
-    int                m_iStackCount        = 2;
+    int                              workspaceID = -1;
+    std::vector<float>               stackPercs;
+    std::vector<int>                 stackNodeCount;
+    std::vector<eStackLayoutMode>    stackLayoutModes;  // Per-stack layout mode
+    int                              m_iStackCount        = 2;
     bool               new_on_top           = false;
     bool               new_is_master        = true;
     bool               center_single_master = false;
@@ -108,6 +116,8 @@ class CHyprNstackLayout : public IHyprLayout {
     int                             getMastersOnWorkspace(const int&);
     bool                            prepareLoseFocus(PHLWINDOW);
     void                            prepareNewFocus(PHLWINDOW, bool inherit_fullscreen);
+
+    void                            moveToAdjacentStack(PHLWINDOW pWindow, int direction);
 
     friend struct SNstackNodeData;
     friend struct SNstackWorkspaceData;

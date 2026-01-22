@@ -38,15 +38,70 @@ All configuration variables are also usable as workspace rule layout options. Ju
 
 # Dispatchers
 
-Two new dispatchers
- * `resetsplits` Reset all the window splits to default sizes.
- * `setstackcount` Change the number of stacks for the current workspace. Windows will be re-tiled to fit the new stack count.
+All dispatchers are invoked via `layoutmsg`, e.g. `layoutmsg setstackcount 3`
 
-Two new-ish orientations
- * `orientationhcenter` Master is horizontally centered with stacks to the left and right. 
- * `orientationvcenter` Master is vertically centered with stacks on the top and bottom. 
+### Stack Management
+ * `resetsplits` Reset all the window splits to default sizes.
+ * `setstackcount <n|+n|-n>` Change the number of stacks for the current workspace. Windows will be re-tiled to fit the new stack count. Supports absolute values or relative adjustments (`+1`, `-1`).
+
+### Window Movement
+ * `movetostack <l|left|r|right>` Move the focused window to an adjacent slave stack. Movement wraps around (rightmost → leftmost and vice versa). Skips the master stack. No-op if the focused window is the master.
+ * `swapwithmaster [master|child|auto]` Swap the focused slave window with the master window. If master is focused, swaps with the first slave.
+
+### Stack Layout Modes
+Each slave stack can independently use either vertical stacking or dwindle layout.
+
+ * `stacklayoutmode <toggle|vertical|dwindle>` Change the layout mode for the current stack.
+   - `vertical` (default): Windows are stacked linearly (vertically or horizontally based on orientation)
+   - `dwindle`: Windows use recursive binary splits within the stack, similar to the dwindle layout
+
+### Orientation
+ * `orientationleft`, `orientationright`, `orientationtop`, `orientationbottom` Set master position.
+ * `orientationhcenter` Master is horizontally centered with stacks to the left and right.
+ * `orientationvcenter` Master is vertically centered with stacks on the top and bottom.
  * `orientationcenter` An alias for `orientationhcenter`
+ * `orientationnext`, `orientationprev` Cycle through orientations.
+ * `orientationcycle <orientation list>` Cycle through a specific list of orientations.
+
+### Focus
+ * `focusmaster [master|auto]` Focus the master window. If already on master, focus first slave.
+ * `cyclenext`, `cycleprev` Cycle focus through windows.
+ * `swapnext`, `swapprev` Swap focused window with next/previous.
+
+# Smart Window Routing
+
+New windows are intelligently routed based on focus:
+- **Focused on a slave stack**: New window opens in the *same* stack as the focused window
+- **Focused on master**: New window auto-balances across slave stacks (default behavior)
+
+This allows you to quickly spawn multiple related windows in the same stack by keeping focus there.
+
+# Stack Persistence
+
+Windows remember their assigned stack across re-layouts. When you move a window to a specific stack with `movetostack`, it stays there even when:
+- Other windows are added or removed
+- The layout is recalculated
+- Splits are reset
  
+
+# Example Keybindings
+
+```conf
+# Stack count
+bindd = SUPER CTRL, minus, Decrease stack count, layoutmsg, setstackcount -1
+bindd = SUPER CTRL, equal, Increase stack count, layoutmsg, setstackcount +1
+bindd = SUPER CTRL, R, Reset splits, layoutmsg, resetsplits
+
+# Move windows between stacks ([ and ] keys)
+bindd = SUPER CTRL, bracketleft, Move to left stack, layoutmsg, movetostack l
+bindd = SUPER CTRL, bracketright, Move to right stack, layoutmsg, movetostack r
+
+# Toggle stack layout mode
+bindd = SUPER CTRL, Y, Toggle dwindle/vertical, layoutmsg, stacklayoutmode toggle
+
+# Swap with master
+bindd = SUPER CTRL, M, Swap with master, layoutmsg, swapwithmaster
+```
 
 # Installing
 
@@ -87,3 +142,7 @@ plugins = [
 - [ ] Improve mouse resizing of stacks
 - [X] Improve drag and drop rearranging of windows in and between stacks
 - [X] Allow resizing of single master window
+- [X] Move windows between stacks with `movetostack`
+- [X] Smart new window routing based on focus
+- [X] Per-stack layout modes (vertical/dwindle)
+- [X] Stack persistence across re-layouts

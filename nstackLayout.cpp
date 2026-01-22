@@ -249,6 +249,14 @@ void CHyprNstackLayout::onWindowCreatedTiling(PHLWINDOW pWindow, eDirection dire
     } else {
         PNODE->isMaster = false;
 
+        // Smart new window routing: route to focused stack if focused on slave
+        if (OPENINGON && !OPENINGON->isMaster) {
+            // Focused window is a slave - route new window to same stack
+            // Use stackNum - 1 to convert to 0-indexed targetStack
+            PNODE->targetStack = OPENINGON->stackNum - 1;
+        }
+        // else: focused on master or no focus - leave targetStack = -1 for auto-balance
+
         // first, check if it isn't too big.
         if (const auto MAXSIZE = pWindow->maxSize().value_or(Math::VECTOR2D_MAX);
             MAXSIZE.x < PMONITOR->m_size.x * (1 - lastSplitPercent) || MAXSIZE.y < PMONITOR->m_size.y * (1.f / (WINDOWSONWORKSPACE - 1))) {
@@ -494,10 +502,29 @@ void CHyprNstackLayout::calculateWorkspace(PHLWORKSPACE PWORKSPACE) {
 
     PWORKSPACEDATA->stackNodeCount.assign(numStacks + 1, 0);
     PWORKSPACEDATA->stackPercs.resize(numStacks + 1, 1.0f);
+    PWORKSPACEDATA->stackLayoutModes.resize(numStacks, eStackLayoutMode::VERTICAL);
+
+    // First pass: assign stacks respecting targetStack and count windows per stack
+    int autoAssignCounter = 0;
+    for (auto& nd : m_lMasterNodesData) {
+        if (nd.workspaceID != PWORKSPACE->m_id || nd.isMaster)
+            continue;
+
+        int assignedStack;
+        if (nd.targetStack >= 0 && nd.targetStack < numStacks) {
+            // Use the forced target stack
+            assignedStack = nd.targetStack;
+        } else {
+            // Auto-balance using round-robin
+            assignedStack = autoAssignCounter % numStacks;
+            autoAssignCounter++;
+        }
+        nd.stackNum = assignedStack + 1;  // stackNum is 1-indexed for slaves
+        PWORKSPACEDATA->stackNodeCount[nd.stackNum]++;
+    }
 
     float                 stackNodeSizeLeft = orientation % 2 == 1 ? PMONITOR->m_size.x - PMONITOR->m_reservedArea.right() - PMONITOR->m_reservedArea.left() :
                                                                      PMONITOR->m_size.y - PMONITOR->m_reservedArea.bottom() - PMONITOR->m_reservedArea.top();
-    int                   stackNum          = (slavesTotal - slavesLeft) % numStacks;
     std::vector<float>    nodeSpaceLeft(numStacks, stackNodeSizeLeft);
     std::vector<float>    nodeNextCoord(numStacks, 0);
     std::vector<Vector2D> stackCoords(numStacks, Vector2D(0, 0));
@@ -569,31 +596,105 @@ void CHyprNstackLayout::calculateWorkspace(PHLWORKSPACE PWORKSPACE) {
         stackCoords[i] = Vector2D(stackStart, stackStart + scaledSize);
     }
 
+    // Collect windows per stack for dwindle layout calculation
+    std::vector<std::vector<SNstackNodeData*>> stackWindows(numStacks);
     for (auto& nd : m_lMasterNodesData) {
         if (nd.workspaceID != PWORKSPACE->m_id || nd.isMaster)
             continue;
-
-        Vector2D stackPos = stackCoords[stackNum];
-        if (orientation % 2 == 0) {
-            nd.position = Vector2D(PMONITOR->m_reservedArea.left(), PMONITOR->m_reservedArea.top()) + PMONITOR->m_position + Vector2D(stackPos.x, nodeNextCoord[stackNum]);
-        } else {
-            nd.position = Vector2D(PMONITOR->m_reservedArea.left(), PMONITOR->m_reservedArea.top()) + PMONITOR->m_position + Vector2D(nodeNextCoord[stackNum], stackPos.x);
+        int stackIdx = nd.stackNum - 1;
+        if (stackIdx >= 0 && stackIdx < numStacks) {
+            stackWindows[stackIdx].push_back(&nd);
         }
+    }
 
-        int nodeDiv = slavesTotal / numStacks;
-        if (slavesTotal % numStacks && stackNum < slavesTotal % numStacks)
-            nodeDiv++;
-        float NODESIZE = slavesLeft > numStacks ? (stackNodeSizeLeft / nodeDiv) * nd.percSize : nodeSpaceLeft[stackNum];
-        if (NODESIZE > nodeSpaceLeft[stackNum] * 0.9f && slavesLeft > numStacks)
-            NODESIZE = nodeSpaceLeft[stackNum] * 0.9f;
-        nd.stackNum = stackNum + 1;
-        nd.size     = orientation % 2 == 1 ? Vector2D(NODESIZE, stackPos.y - stackPos.x) : Vector2D(stackPos.y - stackPos.x, NODESIZE);
-        PWORKSPACEDATA->stackNodeCount[nd.stackNum]++;
-        slavesLeft--;
-        nodeSpaceLeft[stackNum] -= NODESIZE;
-        nodeNextCoord[stackNum] += NODESIZE;
-        stackNum = (slavesTotal - slavesLeft) % numStacks;
-        applyNodeDataToWindow(&nd);
+    // Second pass: position windows based on their assigned stack
+    for (int stackIdx = 0; stackIdx < numStacks; stackIdx++) {
+        auto& windows = stackWindows[stackIdx];
+        if (windows.empty())
+            continue;
+
+        Vector2D stackPos = stackCoords[stackIdx];
+        float stackWidth = stackPos.y - stackPos.x;  // This is the width/height in the stack direction
+
+        // Check if this stack uses dwindle layout
+        if (PWORKSPACEDATA->stackLayoutModes[stackIdx] == eStackLayoutMode::DWINDLE) {
+            // Dwindle layout: recursive binary splits
+            CBox stackBox;
+            if (orientation % 2 == 0) {
+                // Horizontal orientation (left/right/hcenter): stacks are columns
+                stackBox = CBox(
+                    PMONITOR->m_position.x + PMONITOR->m_reservedArea.left() + stackPos.x,
+                    PMONITOR->m_position.y + PMONITOR->m_reservedArea.top(),
+                    stackWidth,
+                    stackNodeSizeLeft
+                );
+            } else {
+                // Vertical orientation (top/bottom/vcenter): stacks are rows
+                stackBox = CBox(
+                    PMONITOR->m_position.x + PMONITOR->m_reservedArea.left(),
+                    PMONITOR->m_position.y + PMONITOR->m_reservedArea.top() + stackPos.x,
+                    stackNodeSizeLeft,
+                    stackWidth
+                );
+            }
+
+            // Apply dwindle layout to this stack's windows
+            bool splitHorizontal = (orientation % 2 == 0);  // Start with opposite of stack orientation
+            CBox remaining = stackBox;
+
+            for (size_t i = 0; i < windows.size(); i++) {
+                auto* nd = windows[i];
+                if (i == windows.size() - 1) {
+                    // Last window takes remaining space
+                    nd->position = Vector2D(remaining.x, remaining.y);
+                    nd->size = Vector2D(remaining.w, remaining.h);
+                } else {
+                    CBox thisBox = remaining;
+                    if (splitHorizontal) {
+                        thisBox.h = remaining.h / 2;
+                        remaining.y += thisBox.h;
+                        remaining.h -= thisBox.h;
+                    } else {
+                        thisBox.w = remaining.w / 2;
+                        remaining.x += thisBox.w;
+                        remaining.w -= thisBox.w;
+                    }
+                    nd->position = Vector2D(thisBox.x, thisBox.y);
+                    nd->size = Vector2D(thisBox.w, thisBox.h);
+                    splitHorizontal = !splitHorizontal;
+                }
+                applyNodeDataToWindow(nd);
+            }
+        } else {
+            // Vertical (default) layout: windows stacked linearly
+            int nodesInStack = windows.size();
+            float nodeCoord = 0;
+            float spaceLeft = stackNodeSizeLeft;
+
+            for (size_t i = 0; i < windows.size(); i++) {
+                auto* nd = windows[i];
+
+                if (orientation % 2 == 0) {
+                    nd->position = Vector2D(PMONITOR->m_reservedArea.left(), PMONITOR->m_reservedArea.top()) + PMONITOR->m_position + Vector2D(stackPos.x, nodeCoord);
+                } else {
+                    nd->position = Vector2D(PMONITOR->m_reservedArea.left(), PMONITOR->m_reservedArea.top()) + PMONITOR->m_position + Vector2D(nodeCoord, stackPos.x);
+                }
+
+                float NODESIZE;
+                if (i == windows.size() - 1) {
+                    NODESIZE = spaceLeft;  // Last window takes remaining space
+                } else {
+                    NODESIZE = (stackNodeSizeLeft / nodesInStack) * nd->percSize;
+                    if (NODESIZE > spaceLeft * 0.9f)
+                        NODESIZE = spaceLeft * 0.9f;
+                }
+
+                nd->size = orientation % 2 == 1 ? Vector2D(NODESIZE, stackWidth) : Vector2D(stackWidth, NODESIZE);
+                spaceLeft -= NODESIZE;
+                nodeCoord += NODESIZE;
+                applyNodeDataToWindow(nd);
+            }
+        }
     }
 }
 
@@ -1250,6 +1351,63 @@ std::any CHyprNstackLayout::layoutMessage(SLayoutMessageHeader header, std::stri
                 recalculateMonitor(PWINDOW->monitorID());
             }
         }
+    } else if (command == "movetostack") {
+        // Move focused slave window to adjacent stack
+        // Args: l/left = move left, r/right = move right
+        const auto PWINDOW = header.pWindow;
+
+        if (!PWINDOW)
+            return 0;
+
+        if (!isWindowTiled(PWINDOW))
+            return 0;
+
+        // Parse direction: l/left = -1, r/right = +1
+        int direction = 1;  // default right
+        if (vars.size() >= 2) {
+            if (vars[1] == "l" || vars[1] == "left")
+                direction = -1;
+            else if (vars[1] == "r" || vars[1] == "right")
+                direction = 1;
+        }
+
+        moveToAdjacentStack(PWINDOW, direction);
+    } else if (command == "stacklayoutmode") {
+        // Toggle or set layout mode for the current stack
+        // Args: toggle, vertical, dwindle
+        const auto PWINDOW = header.pWindow;
+
+        if (!PWINDOW)
+            return 0;
+
+        if (!isWindowTiled(PWINDOW))
+            return 0;
+
+        const auto PNODE = getNodeFromWindow(PWINDOW);
+        if (!PNODE || PNODE->isMaster)
+            return 0;  // Only works on slave windows
+
+        const auto PWORKSPACEDATA = getMasterWorkspaceData(PWINDOW->workspaceID());
+        if (!PWORKSPACEDATA)
+            return 0;
+
+        int stackIndex = PNODE->stackNum - 1;  // Convert to 0-indexed
+        if (stackIndex < 0 || stackIndex >= (int)PWORKSPACEDATA->stackLayoutModes.size())
+            return 0;
+
+        std::string mode = vars.size() >= 2 ? vars[1] : "toggle";
+
+        if (mode == "toggle") {
+            PWORKSPACEDATA->stackLayoutModes[stackIndex] =
+                (PWORKSPACEDATA->stackLayoutModes[stackIndex] == eStackLayoutMode::VERTICAL)
+                ? eStackLayoutMode::DWINDLE : eStackLayoutMode::VERTICAL;
+        } else if (mode == "dwindle") {
+            PWORKSPACEDATA->stackLayoutModes[stackIndex] = eStackLayoutMode::DWINDLE;
+        } else {
+            PWORKSPACEDATA->stackLayoutModes[stackIndex] = eStackLayoutMode::VERTICAL;
+        }
+
+        recalculateMonitor(PWINDOW->monitorID());
     }
 
     return 0;
@@ -1363,6 +1521,46 @@ void CHyprNstackLayout::onEnable() {
 
 void CHyprNstackLayout::onDisable() {
     m_lMasterNodesData.clear();
+}
+
+void CHyprNstackLayout::moveToAdjacentStack(PHLWINDOW pWindow, int direction) {
+    // direction: -1 = left/up, +1 = right/down
+    auto* PNODE = getNodeFromWindow(pWindow);
+    if (!PNODE || PNODE->isMaster)
+        return;  // Can't move master windows
+
+    const auto PWORKSPACE = g_pCompositor->getWorkspaceByID(pWindow->workspaceID());
+    if (!PWORKSPACE)
+        return;
+
+    auto* WSDATA = getMasterWorkspaceData(PWORKSPACE->m_id);
+
+    // Get the number of slave stacks (stackNodeCount includes master at index 0)
+    int numStacks = WSDATA->stackNodeCount.size() - 1;
+    if (numStacks <= 1)
+        return;  // Nothing to do with 1 or 0 slave stacks
+
+    // Get current stack (0-indexed for slave stacks)
+    // stackNum is 1-indexed where 0 would be master concept, 1+ are slave stacks
+    int currentStack = PNODE->targetStack >= 0 ? PNODE->targetStack : (PNODE->stackNum - 1);
+
+    // Calculate new stack with wraparound
+    int newStack = currentStack + direction;
+    if (newStack < 0) {
+        newStack = numStacks - 1;  // Wrap to rightmost/bottom
+    } else if (newStack >= numStacks) {
+        newStack = 0;  // Wrap to leftmost/top
+    }
+
+    // Only move if actually changing stacks
+    if (newStack == currentStack)
+        return;
+
+    // Set the target stack
+    PNODE->targetStack = newStack;
+
+    // Trigger re-layout
+    recalculateMonitor(pWindow->monitorID());
 }
 
 Vector2D CHyprNstackLayout::predictSizeForNewWindowTiled() {
