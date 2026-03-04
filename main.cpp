@@ -1,27 +1,9 @@
 #include "globals.hpp"
-#include <hyprland/src/config/ConfigManager.hpp>
-#include <hyprland/src/desktop/DesktopTypes.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
 #include "nstackLayout.hpp"
-#include <unistd.h>
-#include <thread>
-// Methods
-inline std::unique_ptr<CHyprNstackLayout> g_pNstackLayout;
 
 // Do NOT change this function.
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
-}
-
-static void deleteWorkspaceData(int ws) {
-    if (g_pNstackLayout)
-        g_pNstackLayout->removeWorkspaceData(ws);
-}
-
-void moveWorkspaceCallback(void* self, SCallbackInfo& cinfo, std::any data) {
-    std::vector<std::any> moveData = std::any_cast<std::vector<std::any>>(data);
-    PHLWORKSPACE          ws       = std::any_cast<PHLWORKSPACE>(moveData.front());
-    deleteWorkspaceData(ws->m_id);
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
@@ -37,21 +19,18 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValue(PHANDLE, "plugin:nstack:layout:center_single_master", Hyprlang::INT{0});
     HyprlandAPI::addConfigValue(PHANDLE, "plugin:nstack:layout:mfact", Hyprlang::FLOAT{0.5f});
     HyprlandAPI::addConfigValue(PHANDLE, "plugin:nstack:layout:single_mfact", Hyprlang::FLOAT{0.5f});
-    g_pNstackLayout  = std::make_unique<CHyprNstackLayout>();
-    static auto MWCB = HyprlandAPI::registerCallbackDynamic(PHANDLE, "moveWorkspace", moveWorkspaceCallback);
 
-    static auto DWCB = HyprlandAPI::registerCallbackDynamic(PHANDLE, "destroyWorkspace", [&](void* self, SCallbackInfo&, std::any data) {
-        CWorkspace* ws = std::any_cast<CWorkspace*>(data);
-        deleteWorkspaceData(ws->m_id);
-    });
-
-    HyprlandAPI::addLayout(PHANDLE, "nstack", g_pNstackLayout.get());
+    HyprlandAPI::addTiledAlgo(PHANDLE, "nstack",
+        &typeid(CNstackAlgorithm),
+        []() -> UP<Layout::ITiledAlgorithm> {
+            return makeUnique<CNstackAlgorithm>();
+        });
 
     HyprlandAPI::reloadConfig();
 
-    return {"hyprNStack", "Plugin for column layout", "Zakk", "1.0"};
+    return {"hyprNStack", "N-Stack tiled layout plugin", "nelsasser", "2.0"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    HyprlandAPI::invokeHyprctlCommand("seterror", "disable");
+    HyprlandAPI::removeAlgo(PHANDLE, "nstack");
 }

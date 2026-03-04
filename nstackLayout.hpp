@@ -2,16 +2,16 @@
 
 #include "globals.hpp"
 #include <hyprland/src/desktop/DesktopTypes.hpp>
-#include <hyprland/src/layout/IHyprLayout.hpp>
+#include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/helpers/math/Math.hpp>
-#include <hyprland/src/render/Renderer.hpp>
-#include <hyprland/src/managers/input/InputManager.hpp>
-#include <hyprland/src/managers/LayoutManager.hpp>
+#include <hyprland/src/helpers/math/Direction.hpp>
+#include <hyprland/src/layout/target/Target.hpp>
+#include <hyprland/src/layout/space/Space.hpp>
+#include <hyprland/src/layout/algorithm/Algorithm.hpp>
 #include <vector>
 #include <list>
-#include <deque>
-#include <any>
+#include <expected>
 
 enum eFullscreenMode : int8_t;
 
@@ -38,31 +38,29 @@ enum eColOrientation : uint8_t {
 };
 
 struct SNstackNodeData {
-    bool         isMaster       = false;
-    bool         masterAdjusted = false;
-    float        percMaster     = 0.5f;
-    int          stackNum       = 0;
-    int          targetStack    = -1;  // -1 = auto-assign, 0+ = force this stack (0-indexed)
-    PHLWINDOWREF   dwindleParent;        // Parent window for dwindle layout (window this was split from)
-    eSplitDirection splitDirection = eSplitDirection::SPLIT_HORIZONTAL; // For dwindle: direction to split this node
+    bool              isMaster       = false;
+    bool              masterAdjusted = false;
+    float             percMaster     = 0.5f;
+    int               stackNum       = 0;
+    int               targetStack    = -1;  // -1 = auto-assign, 0+ = force this stack (0-indexed)
+    WP<Layout::ITarget> dwindleParent;      // Parent target for dwindle layout (target this was split from)
+    eSplitDirection   splitDirection = eSplitDirection::SPLIT_HORIZONTAL; // For dwindle: direction to split this node
 
-    PHLWINDOWREF pWindow;
+    WP<Layout::ITarget> pTarget;
 
-    Vector2D     position;
-    Vector2D     size;
+    Vector2D          position;
+    Vector2D          size;
 
-    float        percSize = 1.f; // size multiplier for resizing children
+    float             percSize = 1.f; // size multiplier for resizing children
 
-    int          workspaceID            = -1;
-    bool         ignoreFullscreenChecks = false;
+    bool              ignoreFullscreenChecks = false;
 
-    bool         operator==(const SNstackNodeData& rhs) const {
-        return pWindow.lock() == rhs.pWindow.lock();
+    bool              operator==(const SNstackNodeData& rhs) const {
+        return pTarget.lock() == rhs.pTarget.lock();
     }
 };
 
 struct SNstackWorkspaceData {
-    int                              workspaceID = -1;
     std::vector<float>               stackPercs;
     std::vector<int>                 stackNodeCount;
     std::vector<eStackLayoutMode>    stackLayoutModes;  // Per-stack layout mode
@@ -76,56 +74,46 @@ struct SNstackWorkspaceData {
     float              single_master_factor = 0.5f;
     float              special_scale_factor = 0.8f;
     eColOrientation    orientation          = NSTACK_ORIENTATION_LEFT;
-
-    bool               operator==(const SNstackWorkspaceData& rhs) const {
-        return workspaceID == rhs.workspaceID;
-    }
 };
 
-class CHyprNstackLayout : public IHyprLayout {
+class CNstackAlgorithm : public Layout::ITiledAlgorithm {
   public:
-    virtual void                     onWindowCreatedTiling(PHLWINDOW, eDirection direction = DIRECTION_DEFAULT);
-    virtual void                     onWindowRemovedTiling(PHLWINDOW);
-    virtual bool                     isWindowTiled(PHLWINDOW);
-    virtual void                     recalculateMonitor(const MONITORID&);
-    virtual void                     recalculateWindow(PHLWINDOW);
-    virtual void                     resizeActiveWindow(const Vector2D&, eRectCorner corner, PHLWINDOW pWindow = nullptr);
-    virtual void                     fullscreenRequestForWindow(PHLWINDOW, const eFullscreenMode CURRENT_EFFECTIVE_MODE, const eFullscreenMode EFFECTIVE_MODE);
-    virtual std::any                 layoutMessage(SLayoutMessageHeader, std::string);
-    virtual SWindowRenderLayoutHints requestRenderHints(PHLWINDOW);
-    virtual void                     switchWindows(PHLWINDOW, PHLWINDOW);
-    virtual void                     moveWindowTo(PHLWINDOW, const std::string& dir, bool silent);
-    virtual void                     alterSplitRatio(PHLWINDOW, float, bool);
-    virtual std::string              getLayoutName();
-    virtual void                     replaceWindowDataWith(PHLWINDOW from, PHLWINDOW to);
-    virtual Vector2D                 predictSizeForNewWindowTiled();
+    CNstackAlgorithm()          = default;
+    virtual ~CNstackAlgorithm() = default;
 
-    virtual void                     onEnable();
-    virtual void                     onDisable();
-    void                             removeWorkspaceData(const int& ws);
+    // ITiledAlgorithm interface
+    virtual void                             newTarget(SP<Layout::ITarget> target) override;
+    virtual void                             movedTarget(SP<Layout::ITarget> target, std::optional<Vector2D> focalPoint = std::nullopt) override;
+    virtual void                             removeTarget(SP<Layout::ITarget> target) override;
+    virtual void                             resizeTarget(const Vector2D& delta, SP<Layout::ITarget> target, Layout::eRectCorner corner = Layout::CORNER_NONE) override;
+    virtual void                             recalculate() override;
+    virtual SP<Layout::ITarget>              getNextCandidate(SP<Layout::ITarget> old) override;
+    virtual std::expected<void, std::string> layoutMsg(const std::string_view& sv) override;
+    virtual std::optional<Vector2D>          predictSizeForNewTarget() override;
+    virtual void                             swapTargets(SP<Layout::ITarget> a, SP<Layout::ITarget> b) override;
+    virtual void                             moveTargetInDirection(SP<Layout::ITarget> t, Math::eDirection dir, bool silent) override;
 
   private:
-    std::list<SNstackNodeData>      m_lMasterNodesData;
-    std::list<SNstackWorkspaceData> m_lMasterWorkspacesData;
+    std::list<SNstackNodeData> m_nodes;
+    SNstackWorkspaceData       m_wsData;
+    bool                       m_forceWarps = false;
 
-    bool                            m_bForceWarps = false;
-
-    void                            buildOrientationCycleVectorFromVars(std::vector<eColOrientation>& cycle, CVarList& vars);
+    void                            buildOrientationCycleVectorFromVars(std::vector<eColOrientation>& cycle, Hyprutils::String::CVarList2& vars);
     void                            buildOrientationCycleVectorFromEOperation(std::vector<eColOrientation>& cycle);
-    void                            runOrientationCycle(SLayoutMessageHeader& header, CVarList* vars, int next);
-    int                             getNodesOnWorkspace(const int&);
+    void                            runOrientationCycle(Hyprutils::String::CVarList2* vars, int next);
+    int                             getNodesCount();
     void                            applyNodeDataToWindow(SNstackNodeData*);
-    void                            resetNodeSplits(const int&);
-    SNstackNodeData*                getNodeFromWindow(PHLWINDOW);
-    SNstackNodeData*                getMasterNodeOnWorkspace(const int&);
-    SNstackWorkspaceData*           getMasterWorkspaceData(const int&);
-    void                            calculateWorkspace(PHLWORKSPACE);
-    PHLWINDOW                       getNextWindow(PHLWINDOW, bool);
-    int                             getMastersOnWorkspace(const int&);
-    bool                            prepareLoseFocus(PHLWINDOW);
-    void                            prepareNewFocus(PHLWINDOW, bool inherit_fullscreen);
+    void                            resetNodeSplits();
+    SNstackNodeData*                getNodeFromTarget(SP<Layout::ITarget> target);
+    SNstackNodeData*                getNodeFromWindow(PHLWINDOW pWindow);
+    SNstackNodeData*                getMasterNode();
+    void                            applyWorkspaceLayoutOptions();
+    void                            calculateWorkspace();
+    SP<Layout::ITarget>             getNextTarget(SP<Layout::ITarget> target, bool next);
+    int                             getMastersCount();
+    bool                            isTargetTiled(SP<Layout::ITarget> target);
 
-    void                            moveToAdjacentStack(PHLWINDOW pWindow, int direction);
+    void                            moveToAdjacentStack(SP<Layout::ITarget> target, int direction);
 
     // Slave stack layout handlers
     void                            layoutStackVertical(std::vector<SNstackNodeData*>& windows, PHLMONITOR monitor, int orientation, Vector2D stackPos, float stackWidth, float stackNodeSizeLeft);
@@ -143,11 +131,11 @@ struct std::formatter<SNstackNodeData*, CharT> : std::formatter<CharT> {
         auto out = ctx.out();
         if (!node)
             return std::format_to(out, "[Node nullptr]");
-        std::format_to(out, "[Node {:x}: workspace: {}, pos: {:j2}, size: {:j2}", (uintptr_t)node, node->workspaceID, node->position, node->size);
+        std::format_to(out, "[Node {:x}: pos: {:j2}, size: {:j2}", (uintptr_t)node, node->position, node->size);
         if (node->isMaster)
             std::format_to(out, ", master");
-        if (!node->pWindow.expired())
-            std::format_to(out, ", window: {:x}", node->pWindow.lock());
+        if (!node->pTarget.expired())
+            std::format_to(out, ", target: {:x}", (uintptr_t)node->pTarget.lock().get());
         return std::format_to(out, "]");
     }
 };
