@@ -9,6 +9,9 @@
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/layout/target/WindowTarget.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/config/shared/parserUtils/ParserUtils.hpp>
+#include <hyprland/src/config/shared/workspace/WorkspaceRuleManager.hpp>
+#include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <format>
 #include <functional>
 #include <map>
@@ -54,8 +57,8 @@ void CNstackAlgorithm::applyWorkspaceLayoutOptions() {
     auto space = m_parent.lock()->space();
     auto workspace = space->workspace();
 
-    const auto wsrule       = g_pConfigManager->getWorkspaceRuleFor(workspace);
-    const auto wslayoutopts = wsrule.layoutopts;
+    const auto wsrule       = Config::workspaceRuleMgr()->getWorkspaceRuleFor(workspace).value_or(Config::CWorkspaceRule{});
+    const auto wslayoutopts = wsrule.m_layoutopts;
 
     static auto* const orientation   = (Hyprlang::STRING const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:orientation")->getDataStaticPtr();
     std::string        wsorientation = *orientation;
@@ -120,31 +123,31 @@ void CNstackAlgorithm::applyWorkspaceLayoutOptions() {
     static auto* const NEWTOP   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:new_on_top")->getDataStaticPtr();
     auto               wsnewtop = **NEWTOP;
     if (wslayoutopts.contains("nstack-new_on_top"))
-        wsnewtop = configStringToInt(wslayoutopts.at("nstack-new_on_top")).value_or(0);
+        wsnewtop = Config::ParserUtils::parseInt(wslayoutopts.at("nstack-new_on_top")).value_or(0);
     m_wsData.new_on_top = wsnewtop;
 
     static auto* const NEWMASTER   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:new_is_master")->getDataStaticPtr();
     auto               wsnewmaster = **NEWMASTER;
     if (wslayoutopts.contains("nstack-new_is_master"))
-        wsnewmaster = configStringToInt(wslayoutopts.at("nstack-new_is_master")).value_or(0);
+        wsnewmaster = Config::ParserUtils::parseInt(wslayoutopts.at("nstack-new_is_master")).value_or(0);
     m_wsData.new_is_master = wsnewmaster;
 
     static auto* const NGWO   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:no_gaps_when_only")->getDataStaticPtr();
     auto               wsngwo = **NGWO;
     if (wslayoutopts.contains("nstack-no_gaps_when_only"))
-        wsngwo = configStringToInt(wslayoutopts.at("nstack-no_gaps_when_only")).value_or(0);
+        wsngwo = Config::ParserUtils::parseInt(wslayoutopts.at("nstack-no_gaps_when_only")).value_or(0);
     m_wsData.no_gaps_when_only = wsngwo;
 
     static auto* const INHERITFS   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:inherit_fullscreen")->getDataStaticPtr();
     auto               wsinheritfs = **INHERITFS;
     if (wslayoutopts.contains("nstack-inherit_fullscreen"))
-        wsinheritfs = configStringToInt(wslayoutopts.at("nstack-inherit_fullscreen")).value_or(0);
+        wsinheritfs = Config::ParserUtils::parseInt(wslayoutopts.at("nstack-inherit_fullscreen")).value_or(0);
     m_wsData.inherit_fullscreen = wsinheritfs;
 
     static auto* const CENTERSM   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:center_single_master")->getDataStaticPtr();
     auto               wscentersm = **CENTERSM;
     if (wslayoutopts.contains("nstack-center_single_master"))
-        wscentersm = configStringToInt(wslayoutopts.at("nstack-center_single_master")).value_or(0);
+        wscentersm = Config::ParserUtils::parseInt(wslayoutopts.at("nstack-center_single_master")).value_or(0);
     m_wsData.center_single_master = wscentersm;
 }
 
@@ -269,7 +272,7 @@ void CNstackAlgorithm::removeTarget(SP<Layout::ITarget> target) {
     recalculate();
 }
 
-void CNstackAlgorithm::recalculate() {
+void CNstackAlgorithm::recalculate(Layout::eRecalculateReason reason) {
     applyWorkspaceLayoutOptions();
     calculateWorkspace();
 }
@@ -543,7 +546,7 @@ void CNstackAlgorithm::applyNodeDataToWindow(SNstackNodeData* pNode) {
     const bool DISPLAYTOP    = STICKS(pNode->position.y, WORKAREA.y);
     const bool DISPLAYBOTTOM = STICKS(pNode->position.y + pNode->size.y, WORKAREA.y + WORKAREA.h);
 
-    const auto WORKSPACERULE = g_pConfigManager->getWorkspaceRuleFor(workspace);
+    const auto WORKSPACERULE = Config::workspaceRuleMgr()->getWorkspaceRuleFor(workspace).value_or(Config::CWorkspaceRule{});
 
     if (PWINDOW->isFullscreen() && !pNode->ignoreFullscreenChecks)
         return;
@@ -551,15 +554,15 @@ void CNstackAlgorithm::applyNodeDataToWindow(SNstackNodeData* pNode) {
     PWINDOW->m_ruleApplicator->resetProps(Desktop::Rule::RULE_PROP_ALL, Desktop::Types::PRIORITY_LAYOUT);
     PWINDOW->updateWindowData();
 
-    static auto* const PANIMATE = (Hyprlang::INT* const*)g_pConfigManager->getConfigValuePtr("misc:animate_manual_resizes");
+    static auto* const PANIMATE = (Hyprlang::INT* const*)Config::mgr()->getConfigValue("misc:animate_manual_resizes").dataptr;
 
-    static auto* const PGAPSINDATA  = (Hyprlang::CUSTOMTYPE* const*)g_pConfigManager->getConfigValuePtr("general:gaps_in");
-    static auto* const PGAPSOUTDATA = (Hyprlang::CUSTOMTYPE* const*)g_pConfigManager->getConfigValuePtr("general:gaps_out");
-    auto* const        PGAPSIN      = (CCssGapData*)(*PGAPSINDATA)->getData();
-    auto* const        PGAPSOUT     = (CCssGapData*)(*PGAPSOUTDATA)->getData();
+    static auto* const PGAPSINDATA  = (Hyprlang::CUSTOMTYPE* const*)Config::mgr()->getConfigValue("general:gaps_in").dataptr;
+    static auto* const PGAPSOUTDATA = (Hyprlang::CUSTOMTYPE* const*)Config::mgr()->getConfigValue("general:gaps_out").dataptr;
+    auto* const        PGAPSIN      = (Config::CCssGapData*)(*PGAPSINDATA)->getData();
+    auto* const        PGAPSOUT     = (Config::CCssGapData*)(*PGAPSOUTDATA)->getData();
 
-    auto               gapsIn  = WORKSPACERULE.gapsIn.value_or(*PGAPSIN);
-    auto               gapsOut = WORKSPACERULE.gapsOut.value_or(*PGAPSOUT);
+    auto               gapsIn  = WORKSPACERULE.m_gapsIn.value_or(*PGAPSIN);
+    auto               gapsOut = WORKSPACERULE.m_gapsOut.value_or(*PGAPSOUT);
 
     if (!validMapped(PWINDOW)) {
         Log::logger->log(Log::ERR, "Node {} holding invalid window {}!!", pNode, PWINDOW);
@@ -926,7 +929,7 @@ SP<Layout::ITarget> CNstackAlgorithm::getNextCandidate(SP<Layout::ITarget> old) 
     return getNextTarget(old, true);
 }
 
-std::expected<void, std::string> CNstackAlgorithm::layoutMsg(const std::string_view& sv) {
+Config::ErrorResult CNstackAlgorithm::layoutMsg(const std::string_view& sv) {
     auto PWINDOW = Desktop::focusState()->window();
     if (!PWINDOW)
         return {};
