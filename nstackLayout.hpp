@@ -4,14 +4,15 @@
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/config/shared/ConfigErrors.hpp>
 #include <hyprland/src/helpers/math/Math.hpp>
 #include <hyprland/src/helpers/math/Direction.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/layout/space/Space.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
+#include <hyprutils/string/VarList2.hpp>
 #include <vector>
 #include <list>
-#include <expected>
 
 enum eFullscreenMode : int8_t;
 
@@ -86,9 +87,9 @@ class CNstackAlgorithm : public Layout::ITiledAlgorithm {
     virtual void                             movedTarget(SP<Layout::ITarget> target, std::optional<Vector2D> focalPoint = std::nullopt) override;
     virtual void                             removeTarget(SP<Layout::ITarget> target) override;
     virtual void                             resizeTarget(const Vector2D& delta, SP<Layout::ITarget> target, Layout::eRectCorner corner = Layout::CORNER_NONE) override;
-    virtual void                             recalculate() override;
+    virtual void                             recalculate(Layout::eRecalculateReason reason = Layout::RECALCULATE_REASON_UNKNOWN) override;
     virtual SP<Layout::ITarget>              getNextCandidate(SP<Layout::ITarget> old) override;
-    virtual std::expected<void, std::string> layoutMsg(const std::string_view& sv) override;
+    virtual Config::ErrorResult              layoutMsg(const std::string_view& sv) override;
     virtual std::optional<Vector2D>          predictSizeForNewTarget() override;
     virtual void                             swapTargets(SP<Layout::ITarget> a, SP<Layout::ITarget> b) override;
     virtual void                             moveTargetInDirection(SP<Layout::ITarget> t, Math::eDirection dir, bool silent) override;
