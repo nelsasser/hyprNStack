@@ -3,6 +3,8 @@
 #include <hyprland/src/debug/log/Logger.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/render/decorations/CHyprGroupBarDecoration.hpp>
 #include <hyprland/src/render/Renderer.hpp>
@@ -548,7 +550,7 @@ void CNstackAlgorithm::applyNodeDataToWindow(SNstackNodeData* pNode) {
 
     const auto WORKSPACERULE = Config::workspaceRuleMgr()->getWorkspaceRuleFor(workspace).value_or(Config::CWorkspaceRule{});
 
-    if (PWINDOW->isFullscreen() && !pNode->ignoreFullscreenChecks)
+    if (Fullscreen::controller()->isFullscreen(PWINDOW) && !pNode->ignoreFullscreenChecks)
         return;
 
     PWINDOW->m_ruleApplicator->resetProps(Desktop::Rule::RULE_PROP_ALL, Desktop::Types::PRIORITY_LAYOUT);
@@ -569,15 +571,17 @@ void CNstackAlgorithm::applyNodeDataToWindow(SNstackNodeData* pNode) {
         return;
     }
 
-    PWINDOW->m_size     = pNode->size;
-    PWINDOW->m_position = pNode->position;
+    // 0.56 removed CWindow::m_position/m_size; the layout target owns the box now, so keep the
+    // node's tile geometry local and let setPositionGlobal() publish it.
+    const auto NODEPOS  = pNode->position;
+    const auto NODESIZE = pNode->size;
 
-    if (m_wsData.no_gaps_when_only && !g_pCompositor->isWorkspaceSpecial(workspace->m_id) &&
-        (getNodesCount() == 1 || PWINDOW->isEffectiveInternalFSMode(FSMODE_MAXIMIZED))) {
+    if (m_wsData.no_gaps_when_only && !workspace->m_isSpecialWorkspace &&
+        (getNodesCount() == 1 || Fullscreen::controller()->getFullscreenModes(PWINDOW).internal == Fullscreen::FSMODE_MAXIMIZED)) {
         PWINDOW->updateWindowDecos();
         const auto RESERVED = PWINDOW->getFullWindowReservedArea();
 
-        target->setPositionGlobal(CBox{PWINDOW->m_position + RESERVED.topLeft, PWINDOW->m_size - (RESERVED.topLeft + RESERVED.bottomRight)});
+        target->setPositionGlobal(CBox{NODEPOS + RESERVED.topLeft, NODESIZE - (RESERVED.topLeft + RESERVED.bottomRight)});
 
         if (m_forceWarps && !**PANIMATE)
             target->warpPositionSize();
@@ -585,8 +589,8 @@ void CNstackAlgorithm::applyNodeDataToWindow(SNstackNodeData* pNode) {
         return;
     }
 
-    auto       calcPos  = PWINDOW->m_position;
-    auto       calcSize = PWINDOW->m_size;
+    auto       calcPos  = NODEPOS;
+    auto       calcSize = NODESIZE;
 
     const auto OFFSETTOPLEFT = Vector2D((double)(DISPLAYLEFT ? gapsOut.m_left : gapsIn.m_left), (double)(DISPLAYTOP ? gapsOut.m_top : gapsIn.m_top));
 
@@ -599,7 +603,7 @@ void CNstackAlgorithm::applyNodeDataToWindow(SNstackNodeData* pNode) {
     calcPos             = calcPos + RESERVED.topLeft;
     calcSize            = calcSize - (RESERVED.topLeft + RESERVED.bottomRight);
 
-    if (g_pCompositor->isWorkspaceSpecial(workspace->m_id)) {
+    if (workspace->m_isSpecialWorkspace) {
         CBox wb = {calcPos + (calcSize - calcSize * m_wsData.special_scale_factor) / 2.f, calcSize * m_wsData.special_scale_factor};
         wb.round();
         target->setPositionGlobal(wb);
@@ -794,8 +798,10 @@ void CNstackAlgorithm::resizeTarget(const Vector2D& pixResize, SP<Layout::ITarge
     if (!PNODE) {
         // floating - let the window handle it
         auto PWINDOW = target->window();
-        if (PWINDOW)
-            *PWINDOW->m_realSize = Vector2D(std::max((PWINDOW->m_realSize->goal() + pixResize).x, 20.0), std::max((PWINDOW->m_realSize->goal() + pixResize).y, 20.0));
+        if (PWINDOW) {
+            auto& realSize = PWINDOW->sizeAnimation();
+            *realSize      = Vector2D(std::max((realSize->goal() + pixResize).x, 20.0), std::max((realSize->goal() + pixResize).y, 20.0));
+        }
         return;
     }
 
@@ -943,15 +949,15 @@ Config::ErrorResult CNstackAlgorithm::layoutMsg(const std::string_view& sv) {
         if (!validMapped(win))
             return;
 
-        if (PWINDOW->isFullscreen()) {
-            const auto FSMODE        = PWINDOW->m_fullscreenState.internal;
-            g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
+        if (Fullscreen::controller()->isFullscreen(PWINDOW)) {
+            const auto FSMODE = Fullscreen::controller()->getFullscreenModes(PWINDOW).internal;
+            Fullscreen::controller()->setFullscreenMode(PWINDOW, Fullscreen::FSMODE_NONE);
             Desktop::focusState()->fullWindowFocus(win, Desktop::FOCUS_REASON_OTHER);
             if (m_wsData.inherit_fullscreen)
-                g_pCompositor->setWindowFullscreenInternal(win, FSMODE);
+                Fullscreen::controller()->setFullscreenMode(win, FSMODE);
         } else {
             Desktop::focusState()->fullWindowFocus(win, Desktop::FOCUS_REASON_OTHER);
-            g_pCompositor->warpCursorTo(win->middle());
+            win->warpCursor();
         }
         g_pInputManager->m_forcedFocus = win;
         g_pInputManager->simulateMouseMovement();
@@ -1269,7 +1275,7 @@ void CNstackAlgorithm::moveTargetInDirection(SP<Layout::ITarget> t, Math::eDirec
     }
 
     std::string dirStr(1, dirChar);
-    const auto PWINDOW2 = g_pCompositor->getWindowInDirection(PWINDOW, dir);
+    const auto PWINDOW2 = Desktop::windowState()->query().inDirection(PWINDOW, dir);
 
     if (!PWINDOW2)
         return;
