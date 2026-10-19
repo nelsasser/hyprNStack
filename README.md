@@ -26,6 +26,29 @@ plugin {
 }
 ```
 
+With a Lua config (`hyprland.lua`, Hyprland 0.56+), the same options go under `plugin.nstack.layout`:
+```lua
+hl.config({
+  plugin = {
+    nstack = {
+      layout = {
+        orientation = "left",
+        new_on_top = 0,
+        new_is_master = 1,
+        no_gaps_when_only = 0,
+        special_scale_factor = 0.8,
+        inherit_fullscreen = 1,
+        stacks = 2,
+        center_single_master = 0,
+        mfact = 0.5,
+        single_mfact = 0.5,
+      },
+    },
+  },
+})
+```
+These keys exist only after the plugin loads. Load it with `hl.plugin.load` (see [Installing](#installing)) so Hyprland re-reads the config once the plugin is in, instead of reporting them as unknown.
+
 ### Configuration variable differences in comparison to Master Layout
 *  `stacks` The number of *total* stacks, including the master.
 *  `mfact` If this is set to 0 the master is the same size as the stacks. So if there is one master and 2 stacks they are all 1/3rd of the screen width(or height). Master and 3 stacks they are all 1/4th etc.
@@ -36,9 +59,14 @@ plugin {
 All configuration variables are also usable as workspace rule layout options. Just prefix the setting name with 'nstack-'
 `workspace=2,layoutopt:nstack-stacks:2,layoutopt:nstack-single_mfact:0.85`
 
+In Lua:
+```lua
+hl.workspace_rule({ workspace = "2", layout = "nstack", layout_opts = { ["nstack-stacks"] = 2, ["nstack-single_mfact"] = 0.85 } })
+```
+
 # Dispatchers
 
-All dispatchers are invoked via `layoutmsg`, e.g. `layoutmsg setstackcount 3`
+All dispatchers are invoked via `layoutmsg`, e.g. `layoutmsg setstackcount 3`. In a Lua config, use `hl.dsp.layout("setstackcount 3")`.
 
 ### Stack Management
  * `resetsplits` Reset all the window splits to default sizes.
@@ -103,12 +131,27 @@ bindd = SUPER CTRL, Y, Toggle dwindle/vertical, layoutmsg, stacklayoutmode toggl
 bindd = SUPER CTRL, M, Swap with master, layoutmsg, swapwithmaster
 ```
 
+The same bindings in Lua:
+```lua
+hl.bind("SUPER + CTRL + minus", hl.dsp.layout("setstackcount -1"), { description = "Decrease stack count" })
+hl.bind("SUPER + CTRL + equal", hl.dsp.layout("setstackcount +1"), { description = "Increase stack count" })
+hl.bind("SUPER + CTRL + R", hl.dsp.layout("resetsplits"), { description = "Reset splits" })
+
+hl.bind("SUPER + CTRL + bracketleft", hl.dsp.layout("movetostack l"), { description = "Move to left stack" })
+hl.bind("SUPER + CTRL + bracketright", hl.dsp.layout("movetostack r"), { description = "Move to right stack" })
+
+hl.bind("SUPER + CTRL + Y", hl.dsp.layout("stacklayoutmode toggle"), { description = "Toggle dwindle/vertical" })
+
+hl.bind("SUPER + CTRL + M", hl.dsp.layout("swapwithmaster"), { description = "Swap with master" })
+```
+
 # Installing
 
 ## Hyprpm, Hyprland's official plugin manager (recommended)
 1. Run `hyprpm add https://github.com/zakk4223/hyprNStack` and wait for hyprpm to build the plugin.
 2. Run `hyprpm enable hyprNStack`
 3. Set your hyprland layout to `nstack`.
+4. With a Lua config, load the hyprpm build at startup: `hl.plugin.load("/var/cache/hyprpm/" .. os.getenv("USER") .. "/hyprNStack/hyprNStack.so")`
 
 ## Manual
 Hyprland plugins basically have to be user-compiled and loaded. You probably need to compile and install hyprland yourself (if not using a package that exports the headers, e.g. the one on Arch's official repos).
@@ -123,6 +166,7 @@ Then:
    - `cp nstackLayoutPlugin.so ~/.config/hypr/plugins`
 3. Modify your hyprland.conf to load the plugin
    - `exec-once=hyprctl plugin load $HOME/.config/hypr/plugins/nstackLayoutPlugin.so`
+   - or, in `hyprland.lua`: `hl.plugin.load(os.getenv("HOME") .. "/.config/hypr/plugins/nstackLayoutPlugin.so")`
 4. Set your hyprland layout to `nstack`. 
 
 ## Plugin-Manager Hyprload
