@@ -101,6 +101,7 @@ Each slave stack can independently use either vertical stacking or dwindle layou
 New windows are intelligently routed based on focus:
 - **Focused on a slave stack**: New window opens in the *same* stack as the focused window
 - **Focused on master**: New window auto-balances across slave stacks (default behavior)
+- **Two windows with a centered orientation** (`hcenter`/`vcenter`, `new_is_master=0`): The focused window moves to the center as master, the other window keeps its side, and the new window opens on the side the focused window left
 
 This allows you to quickly spawn multiple related windows in the same stack by keeping focus there.
 

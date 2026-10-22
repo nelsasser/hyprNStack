@@ -151,6 +151,14 @@ SNstackNodeData* CNstackAlgorithm::getMasterNode() {
     return nullptr;
 }
 
+void CNstackAlgorithm::transferMaster(SNstackNodeData* from, SNstackNodeData* to) {
+    to->isMaster       = true;
+    to->percMaster     = from->percMaster;
+    to->masterAdjusted = from->masterAdjusted;
+    to->targetStack    = -1;
+    from->isMaster     = false;
+}
+
 void CNstackAlgorithm::resetNodeSplits() {
     // Clear workspace data and recalculate
     m_wsData = SNstackWorkspaceData{};
@@ -167,9 +175,10 @@ void CNstackAlgorithm::newTarget(SP<Layout::ITarget> target) {
 
     PNODE->pTarget = target;
 
-    auto OPENINGON = isTargetTiled(Desktop::focusState()->window() ? Desktop::focusState()->window()->layoutTarget() : nullptr) ?
-            getNodeFromTarget(Desktop::focusState()->window()->layoutTarget()) :
-            getMasterNode();
+    const auto PFOCUSEDWINDOW = Desktop::focusState()->window();
+    const auto PFOCUSEDTARGET = PFOCUSEDWINDOW ? PFOCUSEDWINDOW->layoutTarget() : nullptr;
+    const auto PFOCUSEDNODE   = PFOCUSEDTARGET ? getNodeFromTarget(PFOCUSEDTARGET) : nullptr;
+    auto       OPENINGON      = PFOCUSEDNODE ? PFOCUSEDNODE : getMasterNode();
 
     const auto MOUSECOORDS = g_pInputManager->getMouseCoordsInternal();
 
@@ -177,10 +186,15 @@ void CNstackAlgorithm::newTarget(SP<Layout::ITarget> target) {
     float      lastSplitPercent   = 0.5f;
     bool       lastMasterAdjusted = false;
 
+    // Two columns under a centered orientation: the focused window takes the center as master,
+    // the other window keeps its side, and the new window fills the side the focused window left.
+    const bool CENTERFOCUSED = !m_wsData.new_is_master && WINDOWSONWORKSPACE == 3 && getMastersCount() == 1 && PFOCUSEDNODE && PFOCUSEDNODE != PNODE &&
+        (m_wsData.orientation == NSTACK_ORIENTATION_HCENTER || m_wsData.orientation == NSTACK_ORIENTATION_VCENTER);
+
     // Drag-end deco check removed — handled by CSpace in 0.54.0
 
     bool newWindowIsMaster = false;
-    if (m_wsData.new_is_master || WINDOWSONWORKSPACE == 1 || (!PWINDOW->m_firstMap && OPENINGON && OPENINGON->isMaster))
+    if (!CENTERFOCUSED && (m_wsData.new_is_master || WINDOWSONWORKSPACE == 1 || (!PWINDOW->m_firstMap && OPENINGON && OPENINGON->isMaster)))
         newWindowIsMaster = true;
 
     if (newWindowIsMaster) {
@@ -206,7 +220,7 @@ void CNstackAlgorithm::newTarget(SP<Layout::ITarget> target) {
         PNODE->isMaster = false;
 
         // Smart new window routing: route to focused stack if focused on slave
-        if (OPENINGON && !OPENINGON->isMaster) {
+        if (!CENTERFOCUSED && OPENINGON && !OPENINGON->isMaster) {
             PNODE->targetStack = OPENINGON->stackNum - 1;
             PNODE->dwindleParent = OPENINGON->pTarget;
         }
@@ -215,6 +229,23 @@ void CNstackAlgorithm::newTarget(SP<Layout::ITarget> target) {
             MAXSIZE.x < PMONITOR->m_size.x * (1 - lastSplitPercent) || MAXSIZE.y < PMONITOR->m_size.y * (1.f / (WINDOWSONWORKSPACE - 1))) {
             m_nodes.remove(*PNODE);
             return;
+        }
+
+        if (CENTERFOCUSED) {
+            SNstackNodeData* POTHER = nullptr;
+            for (auto& nd : m_nodes) {
+                if (&nd != PNODE && &nd != PFOCUSEDNODE)
+                    POTHER = &nd;
+            }
+
+            const bool FOCUSEDWASMASTER = PFOCUSEDNODE->isMaster;
+            if (!FOCUSEDWASMASTER)
+                transferMaster(POTHER, PFOCUSEDNODE);
+
+            // With one slave the layout falls back to left/top, so the master sat in stack 0's side
+            // and the slave in stack 1's side. The other window keeps its side.
+            POTHER->targetStack = FOCUSEDWASMASTER ? 1 : 0;
+            PNODE->targetStack  = FOCUSEDWASMASTER ? 0 : 1;
         }
     }
 
@@ -259,6 +290,19 @@ void CNstackAlgorithm::removeTarget(SP<Layout::ITarget> target) {
             it->isMaster = false;
             break;
         }
+    }
+
+    // Two windows under a centered orientation fall back to left/top with the master first. Make the
+    // window that sat further left/top the master, so the two windows keep their sides.
+    if (getNodesCount() == 2 && getMastersCount() == 1 &&
+        (m_wsData.orientation == NSTACK_ORIENTATION_HCENTER || m_wsData.orientation == NSTACK_ORIENTATION_VCENTER)) {
+        const auto PMASTER = getMasterNode();
+        const auto PSLAVE  = PMASTER == &m_nodes.front() ? &m_nodes.back() : &m_nodes.front();
+
+        const bool SLAVEFIRST = m_wsData.orientation == NSTACK_ORIENTATION_HCENTER ? PSLAVE->position.x < PMASTER->position.x :
+                                                                                     PSLAVE->position.y < PMASTER->position.y;
+        if (SLAVEFIRST)
+            transferMaster(PMASTER, PSLAVE);
     }
 
     recalculate();

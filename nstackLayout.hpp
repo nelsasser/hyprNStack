@@ -108,6 +108,7 @@ class CNstackAlgorithm : public Layout::ITiledAlgorithm {
     SNstackNodeData*                getNodeFromTarget(SP<Layout::ITarget> target);
     SNstackNodeData*                getNodeFromWindow(PHLWINDOW pWindow);
     SNstackNodeData*                getMasterNode();
+    void                            transferMaster(SNstackNodeData* from, SNstackNodeData* to);
     void                            applyWorkspaceLayoutOptions();
     void                            calculateWorkspace();
     SP<Layout::ITarget>             getNextTarget(SP<Layout::ITarget> target, bool next);
